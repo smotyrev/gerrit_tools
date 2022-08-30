@@ -68,6 +68,8 @@ if args.command in ['branch', 'b']:
             logging.warning('No source branch found: {}'.format(src))
             sys.exit(1)
         for p in projects:
+            if p in args.skip:
+                continue
             commit = projects[p]['branches'][src]
             create = exec_cmd('{} create-branch {} {} {}'.format(GERRIT_CMD, p, dst, commit))
             print('Branch', dst, 'created in', p, 'hash:', commit, 'OK')
@@ -80,6 +82,8 @@ if args.command in ['branch', 'b']:
             logging.warning('No branch found: {}'.format(branch))
             sys.exit(1)
         for p in projects:
+            if p in args.skip:
+                continue
             res = exec_api('DELETE', '/projects/{}/branches/{}'.format(
                 urllib.parse.quote(p, safe=''), urllib.parse.quote(branch, safe='')
             ))
