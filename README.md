@@ -2,6 +2,13 @@ gerrit_tools
 ============
 Common tools to work with a bunch of Gerrit repositories, with help of REST API and Command Line Tools
 
+Install
+=======
+Python 3.5 required
+```commandline
+pip install gerrit-tools
+```
+
 Setup
 =====
 On first run script will prompt to input several params related to your Gerrit instance.
