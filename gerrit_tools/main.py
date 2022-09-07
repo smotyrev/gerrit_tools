@@ -42,18 +42,20 @@ def exec_api(method: str, url: str, data: [] = None):
 def get_projects(branch: str):
     projects = exec_cmd('{} ls-projects -b {} --format json_compact'.format(GERRIT_CMD, branch))
     projects = json.loads(projects)
-    filtered = {}
-    if len(filter_projects) > 0 or len(skip_projects) > 0:
+    has_filter = len(filter_projects) > 0
+    if has_filter or len(skip_projects) > 0:
+        filtered = {}
         for p in projects:
             if p in skip_projects:
                 continue
-            if p not in filter_projects:
+            if has_filter and p not in filter_projects:
                 continue
             filtered[p] = projects[p]
-    if len(filtered) == 0:
+        projects = filtered
+    if len(projects) == 0:
         logging.warning('No projects found for branch: {}'.format(branch))
         sys.exit(1)
-    return filtered
+    return projects
 
 
 def copy_branch(src: str, dst: str):
@@ -65,7 +67,7 @@ def copy_branch(src: str, dst: str):
         print('Branch', dst, 'created in', p, 'hash:', commit, 'OK')
 
 
-def delete_branch(branch: str, skip: list):
+def delete_branch(branch: str):
     logging.info('Delete branch: {}'.format(branch))
     projects = get_projects(branch=branch)
     for p in projects:
@@ -99,7 +101,7 @@ def main():
         if args.sub_command in ['copy', 'c']:
             copy_branch(args.source, args.destination)
         if args.sub_command in ['delete', 'd']:
-            delete_branch(args.name, args.skip)
+            delete_branch(args.name)
 
 
 if __name__ == "__main__":

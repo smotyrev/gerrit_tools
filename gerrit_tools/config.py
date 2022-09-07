@@ -8,7 +8,16 @@ _CONFIG_FILE = _CONFIG_DIR + os.sep + 'config'
 if not os.path.isdir(_CONFIG_DIR):
     os.mkdir(_CONFIG_DIR)
 if not os.path.isfile(_CONFIG_FILE):
-    with open(_CONFIG_FILE, 'w+'):
+    descriptor = os.open(
+        path=_CONFIG_FILE,
+        flags=(
+                os.O_WRONLY  # access mode: write only
+                | os.O_CREAT  # create if not exists
+                | os.O_TRUNC  # truncate the file to zero
+        ),
+        mode=0o600
+    )
+    with open(descriptor, 'w+'):
         pass
 with open(_CONFIG_FILE, 'r+') as rf:
     for line in rf.readlines():
