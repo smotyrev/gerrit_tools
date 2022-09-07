@@ -6,6 +6,8 @@ import sys
 import logging
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError
+
 import gerrit_tools.config as config
 
 
@@ -21,7 +23,14 @@ filter_projects = []
 
 
 def exec_cmd(cmd: str):
-    return subprocess.check_output(cmd, cwd=CWD, shell=True).decode('UTF-8')
+    res = None
+    try:
+        res = subprocess.check_output(cmd, cwd=CWD, shell=True).decode('UTF-8')
+    except subprocess.CalledProcessError as e:
+        logging.warning(e)
+        return None
+    finally:
+        return res
 
 
 def exec_api(method: str, url: str, data: [] = None):
@@ -53,28 +62,55 @@ def get_projects(branch: str):
             filtered[p] = projects[p]
         projects = filtered
     if len(projects) == 0:
-        logging.warning('No projects found for branch: {}'.format(branch))
+        logging.info('No projects found for branch: {}'.format(branch))
         sys.exit(1)
     return projects
 
 
-def copy_branch(src: str, dst: str):
+def copy_branch(src: str, dst: str, fallback: str = None):
     logging.info('Copy branch: {} => {}'.format(src, dst))
+    existing_projects = exec_cmd('{} ls-projects -b {} --format json_compact'.format(GERRIT_CMD, dst))
+    existing_projects = json.loads(existing_projects).keys()
     projects = get_projects(branch=src)
     for p in projects:
+        if p in existing_projects:
+            print('Branch:', dst, 'already exists in', p)
+            continue
         commit = projects[p]['branches'][src]
+        print('Creating branch:', dst, 'in', p, 'hash:', commit, end='\t')
         create = exec_cmd('{} create-branch {} {} {}'.format(GERRIT_CMD, p, dst, commit))
-        print('Branch', dst, 'created in', p, 'hash:', commit, 'OK')
+        if create is None:
+            print('Fail')
+        else:
+            print('OK')
+    if fallback is None:
+        return
+    fallback_projects = get_projects(branch=fallback)
+    for p in fallback_projects:
+        if p in projects:
+            continue
+        if p in existing_projects:
+            print('Branch', dst, 'already exists in', p)
+            continue
+        projects[p] = fallback_projects[p]
+        commit = projects[p]['branches'][fallback]
+        print('Creating [fallback] branch:', dst, 'in', p, 'hash:', commit, end='\t')
+        create = exec_cmd('{} create-branch {} {} {}'.format(GERRIT_CMD, p, dst, commit))
+        if create is None:
+            print('Fail')
+        else:
+            print('OK')
 
 
 def delete_branch(branch: str):
     logging.info('Delete branch: {}'.format(branch))
     projects = get_projects(branch=branch)
     for p in projects:
+        print('Removing branch:', branch, 'from:', p, end='\t')
         res = exec_api('DELETE', '/projects/{}/branches/{}'.format(
             urllib.parse.quote(p, safe=''), urllib.parse.quote(branch, safe='')
         ))
-        print('Removed branch:', branch, 'from:', p)
+        print('OK')
 
 
 def main():
@@ -99,7 +135,7 @@ def main():
         logging.debug('Filter projects: {}'.format(filter_projects))
     if args.command in ['branch', 'b']:
         if args.sub_command in ['copy', 'c']:
-            copy_branch(args.source, args.destination)
+            copy_branch(args.source, args.destination, args.fallback_source)
         if args.sub_command in ['delete', 'd']:
             delete_branch(args.name)
 
