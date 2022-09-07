@@ -35,6 +35,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='CI repo/git tools.')
     parser.add_argument('--skip', nargs='+', default='platform/manifest',
                         help='Skip projects, default: platform/manifest')
+    parser.add_argument('--manifest', type=str, help='Use manifest for projects list')
+    parser.add_argument('--manifest-tag', choices=['project', 'remove-project'], default='project',
+                        help='Tag, from where project name obtained, default: project')
 
     # Sub commands:
     subparsers = parser.add_subparsers(dest='command', help='Sub-commands', required=True)

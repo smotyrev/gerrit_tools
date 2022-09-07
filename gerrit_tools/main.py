@@ -16,6 +16,9 @@ GERRIT_USER = config.get_val('GERRIT_USER')
 GERRIT_API_TOKEN = config.get_val('GERRIT_API_TOKEN')
 GERRIT_CMD = 'ssh -p {} -l {} {} gerrit'.format(GERRIT_PORT, GERRIT_USER, GERRIT_URL)
 
+skip_projects = []
+filter_projects = []
+
 
 def exec_cmd(cmd: str):
     return subprocess.check_output(cmd, cwd=CWD, shell=True).decode('UTF-8')
@@ -36,16 +39,27 @@ def exec_api(method: str, url: str, data: [] = None):
         return f.read().decode()
 
 
-def copy_branch(src: str, dst: str, skip: list):
-    logging.info('Copy branch: {} => {}'.format(src, dst))
-    projects = exec_cmd('{} ls-projects -b {} --format json_compact'.format(GERRIT_CMD, src))
+def get_projects(branch: str):
+    projects = exec_cmd('{} ls-projects -b {} --format json_compact'.format(GERRIT_CMD, branch))
     projects = json.loads(projects)
-    if len(projects) == 0:
-        logging.warning('No source branch found: {}'.format(src))
+    filtered = {}
+    if len(filter_projects) > 0 or len(skip_projects) > 0:
+        for p in projects:
+            if p in skip_projects:
+                continue
+            if p not in filter_projects:
+                continue
+            filtered[p] = projects[p]
+    if len(filtered) == 0:
+        logging.warning('No projects found for branch: {}'.format(branch))
         sys.exit(1)
+    return filtered
+
+
+def copy_branch(src: str, dst: str):
+    logging.info('Copy branch: {} => {}'.format(src, dst))
+    projects = get_projects(branch=src)
     for p in projects:
-        if p in skip:
-            continue
         commit = projects[p]['branches'][src]
         create = exec_cmd('{} create-branch {} {} {}'.format(GERRIT_CMD, p, dst, commit))
         print('Branch', dst, 'created in', p, 'hash:', commit, 'OK')
@@ -53,14 +67,8 @@ def copy_branch(src: str, dst: str, skip: list):
 
 def delete_branch(branch: str, skip: list):
     logging.info('Delete branch: {}'.format(branch))
-    projects = exec_cmd('{} ls-projects -b {} --format json_compact'.format(GERRIT_CMD, branch))
-    projects = json.loads(projects)
-    if len(projects) == 0:
-        logging.warning('No branch found: {}'.format(branch))
-        sys.exit(1)
+    projects = get_projects(branch=branch)
     for p in projects:
-        if p in skip:
-            continue
         res = exec_api('DELETE', '/projects/{}/branches/{}'.format(
             urllib.parse.quote(p, safe=''), urllib.parse.quote(branch, safe='')
         ))
@@ -69,9 +77,27 @@ def delete_branch(branch: str, skip: list):
 
 def main():
     args = config.parse_args()
+    global skip_projects
+    skip_projects = args.skip
+    global filter_projects
+    if args.manifest is not None:
+        tag = args.manifest_tag
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(args.manifest)
+        root = tree.getroot()
+        logging.debug('Manifest tag: {}, Root: {}'.format(tag, root))
+        if root.tag == 'manifest':
+            for child in root:
+                logging.debug('Child: {} -> {}'.format(child.tag, child.attrib))
+                if tag == child.tag:
+                    filter_projects.append(child.attrib['name'])
+        else:
+            logging.error('Invalid manifest: {}'.format(args.manifest))
+            sys.exit(1)
+        logging.debug('Filter projects: {}'.format(filter_projects))
     if args.command in ['branch', 'b']:
         if args.sub_command in ['copy', 'c']:
-            copy_branch(args.source, args.destination, args.skip)
+            copy_branch(args.source, args.destination)
         if args.sub_command in ['delete', 'd']:
             delete_branch(args.name, args.skip)
 
