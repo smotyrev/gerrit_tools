@@ -123,7 +123,7 @@ def list_branch(branch: str):
         print('\n'.join(projects.keys()))
 
 
-def repo_upload(branch: str):
+def repo_upload(branch: str, force: bool):
     config.verbose and print('repo_upload, branch:', branch)
     if len(config.manifest_projects) == 0:
         logging.error('No projects specified in manifest')
@@ -158,6 +158,9 @@ def repo_upload(branch: str):
             logging.error('Invalid manifest: {}'.format(config.manifest))
             sys.exit(1)
     recursive_read_manifest(config.manifest)
+    git_args = '-o skip-validation'
+    if force:
+        git_args += ' -f'
     for p in manifest_paths:
         path = manifest_paths[p]
         config.verbose and print(p, 'in', path)
@@ -175,7 +178,8 @@ def repo_upload(branch: str):
                 exec_cmd('git -C {} remote remove {}'.format(path, config.GERRIT_REMOTE))
             exec_cmd('git -C {} remote add {} {}'.format(path, config.GERRIT_REMOTE, url))
         print('Push to branch:', branch, 'project:', p, 'in:', path)
-        create = exec_cmd('git -C {} push -f {} HEAD:refs/heads/{}'.format(path, config.GERRIT_REMOTE, branch))
+        create = exec_cmd('git -C {} push {} {} HEAD:refs/heads/{}'.format(
+            path, git_args, config.GERRIT_REMOTE, branch))
         print('\tOK', create)
 
 
@@ -193,7 +197,7 @@ def main():
             sys.exit(1)
     elif args.command in ['repo', 'r']:
         if args.sub_command in ['upload', 'u']:
-            repo_upload(args.new_branch_name)
+            repo_upload(args.new_branch_name, args.force)
         else:
             logging.error('Unknown sub-command: {}'.format(args.sub_command))
             sys.exit(1)

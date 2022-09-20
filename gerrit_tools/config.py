@@ -121,6 +121,8 @@ def parse_args():
     parser_repo_cmd = parser_repo.add_parser(
         'upload', aliases='u', help='Upload to new branch, creating remote {} if absent'.format(GERRIT_REMOTE))
     parser_repo_cmd.add_argument(
+        '--force', '-f', action='store_true', help='Use `git -f` option')
+    parser_repo_cmd.add_argument(
         'new_branch_name', type=str, help='Branch name, where to upload all repo projects')
     add_project_list_limiting_args(parser_repo_cmd)
     ##
