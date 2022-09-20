@@ -107,6 +107,8 @@ def parse_args():
     #   List
     parser_branch_cmd = parser_branch.add_parser('list', aliases='l', help='List projects, containing branch')
     parser_branch_cmd.add_argument(
+        '--force', '-f', action='store_true', help='Use `git -f` option')
+    parser_branch_cmd.add_argument(
         'name', type=str, help='Branch name')
     add_project_list_limiting_args(parser_branch_cmd)
     ##

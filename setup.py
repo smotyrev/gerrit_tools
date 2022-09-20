@@ -8,7 +8,7 @@ def read(fname):
 
 setup(
     name="gerrit_tools",
-    version='0.0.5',
+    version='0.0.6',
     author="Sergey Motyrev",
     author_email="smotyrev@gmail.com",
     description="Gerrit CLI Tool",
