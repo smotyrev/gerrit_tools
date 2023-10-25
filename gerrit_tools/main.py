@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import signal
 import subprocess
 import json
 import sys
@@ -12,12 +12,16 @@ import gerrit_tools.config as config
 from gerrit_tools import bcolors
 
 
-def exec_cmd(cmd: str):
+cancelled = False
+
+
+def exec_cmd(cmd: str, warn: bool = True):
     res = None
     try:
-        res = subprocess.check_output(cmd, cwd=config.cwd, shell=True).decode('UTF-8')
+        res = subprocess.check_output(cmd, shell=True).decode('UTF-8')
     except subprocess.CalledProcessError as e:
-        logging.warning(e)
+        if warn:
+            logging.warning(e)
         return None
     finally:
         return res
@@ -45,6 +49,8 @@ def get_projects(branch: str):
     if has_filter or len(config.skip_projects) > 0:
         filtered = {}
         for p in projects:
+            if cancelled:
+                return
             if p in config.skip_projects:
                 continue
             if has_filter and p not in config.manifest_projects:
@@ -63,20 +69,28 @@ def copy_branch(src: str, dst: str, fallback: str = None):
     existing_projects = json.loads(existing_projects).keys()
     projects = get_projects(branch=src)
     for p in projects:
+        if cancelled:
+            return
         if p in existing_projects:
             print('Branch:', dst, 'already exists in', p)
             continue
         commit = projects[p]['branches'][src]
         print('Creating branch:', dst, 'in', p, 'hash:', commit, end='\t')
-        create = exec_cmd('{} create-branch {} {} {}'.format(config.GERRIT_CMD, p, dst, commit))
-        if create is None:
-            print('Fail')
+        _cmd = '{} create-branch {} {} {}'.format(config.GERRIT_CMD, p, dst, commit)
+        if config.noop:
+            print('DUMMY: {}'.format(_cmd))
         else:
-            print('OK')
+            create = exec_cmd(_cmd)
+            if create is None:
+                print('Fail')
+            else:
+                print('OK')
     if fallback is None:
         return
     fallback_projects = get_projects(branch=fallback)
     for p in fallback_projects:
+        if cancelled:
+            return
         if p in projects:
             continue
         if p in existing_projects:
@@ -84,23 +98,32 @@ def copy_branch(src: str, dst: str, fallback: str = None):
             continue
         projects[p] = fallback_projects[p]
         commit = projects[p]['branches'][fallback]
-        print('Creating [fallback] branch:', dst, 'in', p, 'hash:', commit, end='\t')
-        create = exec_cmd('{} create-branch {} {} {}'.format(config.GERRIT_CMD, p, dst, commit))
-        if create is None:
-            print('Fail')
+        _cmd = '{} create-branch {} {} {}'.format(config.GERRIT_CMD, p, dst, commit)
+        if config.noop:
+            print('DUMMY: {}'.format(_cmd))
         else:
-            print('OK')
+            print('Creating [fallback] branch:', dst, 'in', p, 'hash:', commit, end='\t')
+            create = exec_cmd(_cmd)
+            if create is None:
+                print('Fail')
+            else:
+                print('OK')
 
 
 def delete_branch(branch: str):
     logging.info('Delete branch: {}'.format(branch))
     projects = get_projects(branch=branch)
     for p in projects:
-        print('Removing branch:', branch, 'from:', p, end='\t')
-        res = exec_api('DELETE', '/projects/{}/branches/{}'.format(
-            urllib.parse.quote(p, safe=''), urllib.parse.quote(branch, safe='')
-        ))
-        print('OK')
+        if cancelled:
+            return
+        _api_url = '/projects/{}/branches/{}'.format(urllib.parse.quote(p, safe=''),
+                                                     urllib.parse.quote(branch, safe=''))
+        if config.noop:
+            print('DUMMY_API: DELETE {}'.format(_api_url))
+        else:
+            print('Removing branch:', branch, 'from:', p, end='\t')
+            res = exec_api('DELETE', _api_url)
+            print('OK')
 
 
 def list_branch(branch: str):
@@ -123,64 +146,69 @@ def list_branch(branch: str):
         print('\n'.join(projects.keys()))
 
 
-def repo_upload(branch: str, force: bool):
+def repo_upload(branch: str, force: bool, no_thin: bool, unshallow: bool, create: bool):
     config.verbose and print('repo_upload, branch:', branch)
     if len(config.manifest_projects) == 0:
         logging.error('No projects specified in manifest')
         sys.exit(1)
-    manifest_paths = {}
-    import xml.etree.ElementTree as ET
 
-    def recursive_read_manifest(m_file: str):
-        tree = ET.parse(m_file)
-        root = tree.getroot()
-        if root.tag == 'manifest':
-            for child in root:
-                if child.tag == 'project':
-                    p = child.attrib['name']
-                    if p not in config.manifest_projects:
-                        config.verbose and print(bcolors.ok_cyan("Skip project: {}".format(p)))
-                        continue
-                    if p not in manifest_paths:
-                        manifest_paths[p] = child.attrib['path']
-                    else:
-                        logging.warning('Project: {} already exists'.format(p))
-                        continue
-                elif child.tag == 'remove-project':
-                    p = child.attrib['name']
-                    if p in manifest_paths:
-                        rp = manifest_paths.pop(p, None)
-                        config.verbose and logging.warning('Removing project: {} => {}'.format(p, rp))
-                elif child.tag == 'include':
-                    file = config.cwd.rstrip(os.sep) + os.sep + '.repo/manifests/' + child.attrib['name']
-                    recursive_read_manifest(file)
-        else:
-            logging.error('Invalid manifest: {}'.format(config.manifest))
-            sys.exit(1)
-    recursive_read_manifest(config.manifest)
     git_args = '-o skip-validation'
     if force:
         git_args += ' -f'
-    for p in manifest_paths:
-        path = manifest_paths[p]
+    if no_thin:
+        git_args += ' --no-thin'
+    for p in config.manifest_projects:
+        if cancelled:
+            return
+        path = config.manifest_projects[p]
         config.verbose and print(p, 'in', path)
         if not os.path.isdir(path):
             config.verbose and logging.warning('Skip, no path')
             continue
-        rmt = exec_cmd('git -C {} config remote.{}.url'.format(path, config.GERRIT_REMOTE))
-        if rmt is None:
-            rmt = ''
-        rmt = rmt.strip()
+
         url = '{}/{}'.format(config.GERRIT_SSH_URL, p)
-        if rmt != url:
-            config.verbose and print('remote:', rmt, '=>', url)
-            if rmt != url:
-                exec_cmd('git -C {} remote remove {}'.format(path, config.GERRIT_REMOTE))
-            exec_cmd('git -C {} remote add {} {}'.format(path, config.GERRIT_REMOTE, url))
-        print('Push to branch:', branch, 'project:', p, 'in:', path)
-        create = exec_cmd('git -C {} push {} {} HEAD:refs/heads/{}'.format(
-            path, git_args, config.GERRIT_REMOTE, branch))
-        print('\tOK', create)
+        print(bcolors.header("New upload for: {}".format(url)))
+
+        if unshallow and not config.noop and os.path.isfile(os.path.join(path, ".git/shallow")):
+            with open(os.path.join(path, ".git/shallow")) as f:
+                commit = f.readline().strip()
+                print(bcolors.warn('Found shallow commit: {}'.format(commit)))
+                _tmp_branch = 'gerrit_tools-unshallow'
+                exec_cmd('git -C {} checkout --orphan {} {}'.format(path, _tmp_branch, commit))
+                exec_cmd('git -C {} commit -C {}'.format(path, commit))
+                exec_cmd('git -C {} replace {} {}'.format(path, commit, _tmp_branch))
+                exec_cmd('git -C {} filter-branch -- --all'.format(path))
+
+        if create and not config.noop:
+            _cmd = '{} create-project {} -p {}'.format(config.GERRIT_CMD, p, config.GERRIT_MANIFEST_REPO)
+            if config.noop:
+                print('DUMMY: {}'.format(_cmd))
+            else:
+                print('Create project:', exec_cmd(_cmd) is None and bcolors.warn("Can't") or bcolors.ok_green('Ok'))
+
+        exec_cmd('git -C {} gc'.format(path, config.GERRIT_REMOTE))
+        remote = exec_cmd('git -C {} config remote.{}.url'.format(path, config.GERRIT_REMOTE), False)
+        if remote is not None:
+            remote = remote.strip()
+        if remote != url:
+            if remote is not None:
+                config.verbose and print('redefine remote:', remote, '=>', url)
+                _cmd = 'git -C {} remote remove {}'.format(path, config.GERRIT_REMOTE)
+                if config.noop:
+                    print('DUMMY: {}'.format(_cmd))
+                else:
+                    exec_cmd(_cmd)
+            _cmd = 'git -C {} remote add {} {}'.format(path, config.GERRIT_REMOTE, url)
+            if config.noop:
+                print('DUMMY: {}'.format(_cmd))
+            else:
+                exec_cmd(_cmd)
+        _cmd = 'git -C {} push {} {} HEAD:refs/heads/{}'.format(path, git_args, config.GERRIT_REMOTE, branch)
+        if config.noop:
+            print('DUMMY: {}'.format(_cmd))
+        else:
+            print('Push to branch: {} project: {} in: {}'.format(bcolors.ok_cyan(branch), bcolors.ok_blue(p), path))
+            print('\t', exec_cmd(_cmd) is None and bcolors.fail('Fail') or bcolors.ok_green('Ok'))
 
 
 def main():
@@ -197,7 +225,7 @@ def main():
             sys.exit(1)
     elif args.command in ['repo', 'r']:
         if args.sub_command in ['upload', 'u']:
-            repo_upload(args.new_branch_name, args.force)
+            repo_upload(args.new_branch_name, args.force, args.no_thin, args.unshallow, args.create)
         else:
             logging.error('Unknown sub-command: {}'.format(args.sub_command))
             sys.exit(1)
@@ -206,5 +234,13 @@ def main():
         sys.exit(1)
 
 
+def signal_handler(signum, frame):
+    global cancelled
+    cancelled = True
+    print(bcolors.warn('Cancelled!!!'), signum)
+    sys.exit(1)
+
+
+signal.signal(signal.SIGINT, signal_handler)
 if __name__ == "__main__":
     main()

@@ -7,7 +7,6 @@ from gerrit_tools import bcolors
 
 config: dict = {}
 _PKG = 'gerrit_tools'
-_DEFAULT_SKIP = 'platform/manifest'
 _DEFAULT_MANIFEST = '.repo/manifest.xml'
 _CONFIG_DIR = str(Path.home()) + os.sep + '.config' + os.sep + _PKG
 _CONFIG_FILE = _CONFIG_DIR + os.sep + 'config'
@@ -50,26 +49,36 @@ GERRIT_URL = get_val('GERRIT_URL')
 GERRIT_PORT = get_val('GERRIT_PORT')
 GERRIT_USER = get_val('GERRIT_USER')
 GERRIT_API_TOKEN = get_val('GERRIT_API_TOKEN')
+GERRIT_MANIFEST_REPO = get_val('GERRIT_MANIFEST_REPO')
 GERRIT_CMD = 'ssh -p {} -l {} {} gerrit'.format(GERRIT_PORT, GERRIT_USER, GERRIT_URL)
 GERRIT_SSH_URL = 'ssh://{}@{}:{}'.format(GERRIT_USER, GERRIT_URL, GERRIT_PORT)
 GERRIT_REMOTE = GERRIT_URL.replace('.', '_')
 
 skip_projects = []
 manifest: str
-manifest_projects = []
+manifest_projects = {}
+remote_attr: str
+noop: bool
 verbose: bool
 cwd: str
 
 
 def add_project_list_limiting_args(parser: argparse.ArgumentParser):
     parser.add_argument(
-        '-s', '--skip', nargs='+', default='platform/manifest', help='skip projects, default: ' + _DEFAULT_SKIP)
+        '-s', '--skip', nargs='+', default=GERRIT_MANIFEST_REPO,
+        help='skip projects, default: ' + bcolors.bold(GERRIT_MANIFEST_REPO))
     parser.add_argument(
         '-m', '--manifest', type=str, required=False, default=_DEFAULT_MANIFEST,
-        help='use manifest file to limit project list, default: ' + _DEFAULT_MANIFEST)
+        help='use manifest file to limit project list, default: ' + bcolors.bold(_DEFAULT_MANIFEST))
     parser.add_argument(
         '-t', '--manifest-tag', choices=['project', 'remove-project'], default='project',
         help='tag, from where project name obtained, default: project')
+    parser.add_argument(
+        '-r', '--remote-attr', type=str, required=False,
+        help='pick only tags, with provided "remote=..." attribute')
+    parser.add_argument(
+        '--noop', action='store_true',
+        help='don`t execute any modifications to remote server')
 
 
 def parse_args():
@@ -91,7 +100,8 @@ def parse_args():
         'branch', aliases='b', help='Manipulate branches')
     parser_branch = parser_branch.add_subparsers(dest='sub_command', help='Sub commands', required=True)
     #   Copy
-    parser_branch_cmd = parser_branch.add_parser('copy', aliases='c', help='Copy existing branch to a new one')
+    parser_branch_cmd = parser_branch.add_parser(
+        'copy', aliases='c', help='Copy existing branch to a new one')
     parser_branch_cmd.add_argument(
         'source', type=str, help='Source branch name')
     parser_branch_cmd.add_argument(
@@ -100,12 +110,14 @@ def parse_args():
         '-f', '--fallback-source', type=str, default=None, help='fallback source branch, if <source> does not exist')
     add_project_list_limiting_args(parser_branch_cmd)
     #   Delete
-    parser_branch_cmd = parser_branch.add_parser('delete', aliases='d', help='Delete existing branch')
+    parser_branch_cmd = parser_branch.add_parser(
+        'delete', aliases='d', help='Delete existing branch')
     parser_branch_cmd.add_argument(
         'name', type=str, help='Branch name')
     add_project_list_limiting_args(parser_branch_cmd)
     #   List
-    parser_branch_cmd = parser_branch.add_parser('list', aliases='l', help='List projects, containing branch')
+    parser_branch_cmd = parser_branch.add_parser(
+        'list', aliases='l', help='List projects, containing branch')
     parser_branch_cmd.add_argument(
         'name', type=str, help='Branch name')
     add_project_list_limiting_args(parser_branch_cmd)
@@ -119,11 +131,24 @@ def parse_args():
     parser_repo = parser_repo.add_subparsers(dest='sub_command', help='Sub commands', required=True)
     #   Upload to branch
     parser_repo_cmd = parser_repo.add_parser(
-        'upload', aliases='u', help='Upload to new branch, creating remote {} if absent'.format(GERRIT_REMOTE))
+        'upload', aliases='u',
+        help='Upload to new branch, creating remote {} if absent'.format(GERRIT_REMOTE))
     parser_repo_cmd.add_argument(
-        '--force', '-f', action='store_true', help='Use `git -f` option')
+        '--force', '-f', action='store_true',
+        help='Use `git -f` option')
     parser_repo_cmd.add_argument(
-        'new_branch_name', type=str, help='Branch name, where to upload all repo projects')
+        '--create', action='store_true',
+        help='Create repo before uploading new branch, parent: {}'.format(bcolors.bold(GERRIT_MANIFEST_REPO)))
+    parser_repo_cmd.add_argument(
+        '--no-thin', action='store_true',
+        help='Use `git push --no-thin` option, in case "Missing commit" errors')
+    parser_repo_cmd.add_argument(
+        '--unshallow', action='store_true',
+        help='If repo has "clone-depth" specified in manifest, use unshallow to trick git.'
+             ' Creates new orphan branch, with limited history')
+    parser_repo_cmd.add_argument(
+        'new_branch_name', type=str,
+        help='Branch name, where to upload all repo projects')
     add_project_list_limiting_args(parser_repo_cmd)
     ##
 
@@ -136,10 +161,15 @@ def parse_args():
         parser.version = '{} (Python {})'.format(bcolors.bold(str(dist)), platform.python_version())
         args = parser.parse_args()
 
+    # change directory
+    os.chdir(args.cwd)
+
+    global remote_attr
+    remote_attr = args.remote_attr
+    global noop
+    noop = args.noop
     global verbose
     verbose = args.verbose
-    global cwd
-    cwd = args.cwd
     global skip_projects
     skip_projects = args.skip
     global manifest_projects
@@ -149,13 +179,13 @@ def parse_args():
         if os.path.isfile(args.manifest):
             manifest = args.manifest
         else:
-            manifest = cwd.rstrip(os.sep) + os.sep + args.manifest
+            manifest = os.getcwd().rstrip(os.sep) + os.sep + args.manifest
         if not os.path.isfile(manifest):
             if args.manifest == _DEFAULT_MANIFEST:
-                logging.debug('Manifest', args.manifest, 'not found in', cwd)
-                verbose and print(bcolors.warn('Manifest {} not found in {}'.format(args.manifest, cwd)))
+                logging.debug('Manifest', args.manifest, 'not found in', os.getcwd())
+                verbose and print(bcolors.warn('Manifest {} not found in {}'.format(args.manifest, os.getcwd())))
             else:
-                logging.debug('Manifest', args.manifest, 'not found in', cwd)
+                logging.debug('Manifest', args.manifest, 'not found in', os.getcwd())
         else:
             import xml.etree.ElementTree as ET
 
@@ -166,11 +196,19 @@ def parse_args():
                 if root.tag == 'manifest':
                     for child in root:
                         if child.tag == tag:
-                            p = child.attrib['name']
-                            if p not in manifest_projects:
-                                manifest_projects.append(p)
+                            if remote_attr:
+                                if "remote" not in child.attrib or child.attrib["remote"] != remote_attr:
+                                    continue
+                            name = child.attrib['name']
+                            if name not in manifest_projects:
+                                if 'path' in child.attrib:
+                                    path = child.attrib['path']
+                                else:
+                                    path = name
+                                verbose and print('Append: {} > {}'.format(name, path))
+                                manifest_projects[name] = path
                         elif child.tag == 'include':
-                            file = cwd.rstrip(os.sep) + os.sep + '.repo/manifests/' + child.attrib['name']
+                            file = os.getcwd().rstrip(os.sep) + os.sep + '.repo/manifests/' + child.attrib['name']
                             recursive_read_manifest(file)
                 else:
                     logging.error('Invalid manifest: {}'.format(args.manifest))

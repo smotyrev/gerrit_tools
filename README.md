@@ -33,3 +33,10 @@ Example copying `src/branch` to new `dst/branch` on all repositories:
 ```commandline
 $ gerrit_tools branch copy src/branch dst/branch
 ```
+
+Upload new repo branches from local repo to gerrit.
+Local repos can be filtered by xml tag and by "remote" attribute.
+Option `--create` can be used to try to create remote repository, if absent, before push.
+```commandline
+$ gerrit_tools repo upload <new_branc_name>
+```
